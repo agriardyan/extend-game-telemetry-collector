@@ -1,0 +1,348 @@
+{
+  "swagger": "2.0",
+  "info": {
+    "title": "Game Telemetry Collector API",
+    "description": "Telemetry collection service for AccelByte AGS games. Supports user behavior, gameplay, and technical performance events.",
+    "version": "2.0"
+  },
+  "tags": [
+    {
+      "name": "Service"
+    }
+  ],
+  "basePath": "/telemetry",
+  "consumes": [
+    "application/json"
+  ],
+  "produces": [
+    "application/json"
+  ],
+  "paths": {
+    "/v1/telemetry/gameplay": {
+      "post": {
+        "summary": "Record gameplay telemetry",
+        "description": "Receive and store in-game events such as player deaths, level completions, and combat actions",
+        "operationId": "Service_CreateGameplayTelemetry",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/serviceCreateTelemetryResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/serviceCreateGameplayTelemetryRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Service"
+        ],
+        "security": [
+          {
+            "Bearer": []
+          }
+        ]
+      }
+    },
+    "/v1/telemetry/performance": {
+      "post": {
+        "summary": "Record technical performance telemetry",
+        "description": "Receive and store performance snapshots such as FPS, memory usage, ping, and hardware information",
+        "operationId": "Service_CreatePerformanceTelemetry",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/serviceCreateTelemetryResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/serviceCreatePerformanceTelemetryRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Service"
+        ],
+        "security": [
+          {
+            "Bearer": []
+          }
+        ]
+      }
+    },
+    "/v1/telemetry/user-behavior": {
+      "post": {
+        "summary": "Record user behavior telemetry",
+        "description": "Receive and store user behavior events such as session start/end, feature usage, and navigation patterns",
+        "operationId": "Service_CreateUserBehaviorTelemetry",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/serviceCreateTelemetryResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/serviceCreateUserBehaviorTelemetryRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Service"
+        ],
+        "security": [
+          {
+            "Bearer": []
+          }
+        ]
+      }
+    }
+  },
+  "definitions": {
+    "protobufAny": {
+      "type": "object",
+      "properties": {
+        "@type": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": {}
+    },
+    "rpcStatus": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "message": {
+          "type": "string"
+        },
+        "details": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/protobufAny"
+          }
+        }
+      }
+    },
+    "serviceCreateGameplayTelemetryRequest": {
+      "type": "object",
+      "properties": {
+        "eventId": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "timestamp": {
+          "type": "string"
+        },
+        "data": {
+          "$ref": "#/definitions/serviceGameplayData"
+        }
+      }
+    },
+    "serviceCreatePerformanceTelemetryRequest": {
+      "type": "object",
+      "properties": {
+        "eventId": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "timestamp": {
+          "type": "string"
+        },
+        "metrics": {
+          "$ref": "#/definitions/servicePerformanceMetrics"
+        },
+        "hardware": {
+          "$ref": "#/definitions/serviceHardwareInfo"
+        }
+      }
+    },
+    "serviceCreateTelemetryResponse": {
+      "type": "object",
+      "title": "Shared response for all telemetry endpoints"
+    },
+    "serviceCreateUserBehaviorTelemetryRequest": {
+      "type": "object",
+      "properties": {
+        "eventId": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "timestamp": {
+          "type": "string"
+        },
+        "user": {
+          "$ref": "#/definitions/serviceUserInfo"
+        },
+        "context": {
+          "$ref": "#/definitions/serviceUserBehaviorContext"
+        }
+      }
+    },
+    "serviceGameplayData": {
+      "type": "object",
+      "properties": {
+        "location": {
+          "$ref": "#/definitions/serviceLocation"
+        },
+        "mapId": {
+          "type": "string"
+        },
+        "cause": {
+          "type": "string"
+        },
+        "activeWeapon": {
+          "type": "string"
+        },
+        "attackerId": {
+          "type": "string"
+        },
+        "currentMission": {
+          "type": "string"
+        }
+      }
+    },
+    "serviceHardwareInfo": {
+      "type": "object",
+      "properties": {
+        "cpu": {
+          "type": "string"
+        },
+        "gpu": {
+          "type": "string"
+        },
+        "driverVersion": {
+          "type": "string"
+        }
+      }
+    },
+    "serviceLocation": {
+      "type": "object",
+      "properties": {
+        "x": {
+          "type": "number",
+          "format": "double"
+        },
+        "y": {
+          "type": "number",
+          "format": "double"
+        },
+        "z": {
+          "type": "number",
+          "format": "double"
+        }
+      }
+    },
+    "servicePerformanceMetrics": {
+      "type": "object",
+      "properties": {
+        "fpsAvg": {
+          "type": "number",
+          "format": "double"
+        },
+        "fpsMin": {
+          "type": "number",
+          "format": "double"
+        },
+        "memoryUsageMb": {
+          "type": "string",
+          "format": "int64"
+        },
+        "pingMs": {
+          "type": "string",
+          "format": "int64"
+        },
+        "gpuLoadPercent": {
+          "type": "string",
+          "format": "int64"
+        }
+      }
+    },
+    "serviceUserBehaviorContext": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "totalPlaytimeHours": {
+          "type": "number",
+          "format": "double"
+        },
+        "lastLogin": {
+          "type": "string"
+        }
+      }
+    },
+    "serviceUserInfo": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "country": {
+          "type": "string"
+        },
+        "platform": {
+          "type": "string"
+        },
+        "acquisitionSource": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "securityDefinitions": {
+    "Bearer": {
+      "type": "apiKey",
+      "name": "Authorization",
+      "in": "header"
+    }
+  }
+}
