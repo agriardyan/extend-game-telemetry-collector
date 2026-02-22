@@ -23,6 +23,7 @@ import (
 
 	"github.com/agriardyan/extend-game-telemetry-collector/pkg/config"
 	"github.com/agriardyan/extend-game-telemetry-collector/pkg/dedup"
+	"github.com/agriardyan/extend-game-telemetry-collector/pkg/events"
 	"github.com/agriardyan/extend-game-telemetry-collector/pkg/processor"
 	"github.com/agriardyan/extend-game-telemetry-collector/pkg/service"
 	"github.com/agriardyan/extend-game-telemetry-collector/pkg/storage"
@@ -86,6 +87,30 @@ func parseSlogLevel(levelStr string) slog.Level {
 	}
 }
 
+// buildDeduplicator constructs a Deduplicator[T] based on the app configuration.
+func buildDeduplicator[T storage.Deduplicatable](appCfg *config.Config, logger *slog.Logger) dedup.Deduplicator[T] {
+	if !appCfg.Deduplication.Enabled {
+		logger.Info("deduplication disabled")
+		return dedup.NewNoopDeduplicator[T]()
+	}
+	switch appCfg.Deduplication.Type {
+	case "memory":
+		logger.Info("deduplication enabled", "type", "memory", "ttl", appCfg.Deduplication.TTL)
+		return dedup.NewMemoryDeduplicator[T](appCfg.Deduplication.TTL)
+	case "redis":
+		redisConfig := dedup.RedisConfig{
+			Addr:     appCfg.Deduplication.Redis.Addr,
+			Password: appCfg.Deduplication.Redis.Password,
+			DB:       appCfg.Deduplication.Redis.DB,
+		}
+		logger.Info("deduplication enabled", "type", "redis", "addr", redisConfig.Addr, "ttl", appCfg.Deduplication.TTL)
+		return dedup.NewRedisDeduplicator[T](redisConfig, appCfg.Deduplication.TTL)
+	default:
+		logger.Info("deduplication disabled")
+		return dedup.NewNoopDeduplicator[T]()
+	}
+}
+
 func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -93,16 +118,13 @@ func main() {
 	// Load configuration from environment variables
 	appCfg, err := config.LoadConfig()
 	if err != nil {
-		// Use basic logger since we don't have config yet
 		slog.Error("failed to load configuration", "error", err)
 		os.Exit(1)
 	}
 
 	// Setup logger with configured log level
 	slogLevel := parseSlogLevel(appCfg.Server.LogLevel)
-	opts := &slog.HandlerOptions{
-		Level: slogLevel,
-	}
+	opts := &slog.HandlerOptions{Level: slogLevel}
 	handler := slog.NewJSONHandler(os.Stdout, opts)
 	logger := slog.New(handler)
 	slog.SetDefault(logger)
@@ -115,7 +137,6 @@ func main() {
 			if span := trace.SpanContextFromContext(ctx); span.IsSampled() {
 				return logging.Fields{"traceID", span.TraceID().String()}
 			}
-
 			return nil
 		}),
 		logging.WithLevels(logging.DefaultClientCodeToLevel),
@@ -157,11 +178,8 @@ func main() {
 			logger.Info(err.Error())
 		}
 
-		unaryServerInterceptor := common.NewUnaryAuthServerIntercept()
-		serverServerInterceptor := common.NewStreamAuthServerIntercept()
-
-		unaryServerInterceptors = append(unaryServerInterceptors, unaryServerInterceptor)
-		streamServerInterceptors = append(streamServerInterceptors, serverServerInterceptor)
+		unaryServerInterceptors = append(unaryServerInterceptors, common.NewUnaryAuthServerIntercept())
+		streamServerInterceptors = append(streamServerInterceptors, common.NewStreamAuthServerIntercept())
 		logger.Info("added auth interceptors")
 	}
 
@@ -181,48 +199,52 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Initialize deduplicator
-	var deduplicator dedup.Deduplicator[*storage.TelemetryEvent]
-	if appCfg.Deduplication.Enabled {
-		switch appCfg.Deduplication.Type {
-		case "memory":
-			deduplicator = dedup.NewMemoryDeduplicator[*storage.TelemetryEvent](appCfg.Deduplication.TTL)
-			logger.Info("deduplication enabled", "type", "memory", "ttl", appCfg.Deduplication.TTL)
-
-		case "redis":
-			redisConfig := dedup.RedisConfig{
-				Addr:     appCfg.Deduplication.Redis.Addr,
-				Password: appCfg.Deduplication.Redis.Password,
-				DB:       appCfg.Deduplication.Redis.DB,
-			}
-			deduplicator = dedup.NewRedisDeduplicator[*storage.TelemetryEvent](redisConfig, appCfg.Deduplication.TTL)
-			logger.Info("deduplication enabled", "type", "redis", "addr", redisConfig.Addr, "ttl", appCfg.Deduplication.TTL)
-
-		default:
-			deduplicator = dedup.NewNoopDeduplicator[*storage.TelemetryEvent]()
-			logger.Info("deduplication disabled")
-		}
-	} else {
-		deduplicator = dedup.NewNoopDeduplicator[*storage.TelemetryEvent]()
-		logger.Info("deduplication disabled")
-	}
-
-	// Initialize storage plugins — each plugin receives its typed config via its constructor.
-	var enabledPlugins []storage.StoragePlugin[*storage.TelemetryEvent]
+	// ---------------------------------------------------------------------------
+	// Build typed storage plugin slices — one per event category per enabled backend.
+	// Each backend contributes exactly three plugins (one per event type).
+	// Each plugin owns its own connection and config independently.
+	// ---------------------------------------------------------------------------
+	var userBehaviorPlugins []storage.StoragePlugin[*events.UserBehaviorEvent]
+	var gameplayPlugins []storage.StoragePlugin[*events.GameplayEvent]
+	var performancePlugins []storage.StoragePlugin[*events.PerformanceEvent]
 
 	for _, pluginName := range appCfg.GetEnabledPlugins() {
-		var plugin storage.StoragePlugin[*storage.TelemetryEvent]
+		var (
+			ubPlugin   storage.StoragePlugin[*events.UserBehaviorEvent]
+			gpPlugin   storage.StoragePlugin[*events.GameplayEvent]
+			perfPlugin storage.StoragePlugin[*events.PerformanceEvent]
+		)
 
 		switch pluginName {
 		case "postgres":
-			plugin = postgres.NewPostgresPlugin(postgres.PostgresPluginConfig{
+			ubPlugin = postgres.NewUserBehaviorPlugin(postgres.UserBehaviorPluginConfig{
 				DSN:     appCfg.Storage.Postgres.PostgresDSN,
-				Table:   appCfg.Storage.Postgres.PostgresTable,
+				Table:   "user_behavior_events",
+				Workers: appCfg.Storage.Postgres.Workers,
+			})
+			gpPlugin = postgres.NewGameplayPlugin(postgres.GameplayPluginConfig{
+				DSN:     appCfg.Storage.Postgres.PostgresDSN,
+				Table:   "gameplay_events",
+				Workers: appCfg.Storage.Postgres.Workers,
+			})
+			perfPlugin = postgres.NewPerformancePlugin(postgres.PerformancePluginConfig{
+				DSN:     appCfg.Storage.Postgres.PostgresDSN,
+				Table:   "performance_events",
 				Workers: appCfg.Storage.Postgres.Workers,
 			})
 
 		case "s3":
-			plugin = s3.NewS3Plugin(s3.S3PluginConfig{
+			ubPlugin = s3.NewUserBehaviorPlugin(s3.UserBehaviorPluginConfig{
+				Bucket: appCfg.Storage.S3.S3Bucket,
+				Prefix: appCfg.Storage.S3.S3Prefix,
+				Region: appCfg.Storage.S3.S3Region,
+			})
+			gpPlugin = s3.NewGameplayPlugin(s3.GameplayPluginConfig{
+				Bucket: appCfg.Storage.S3.S3Bucket,
+				Prefix: appCfg.Storage.S3.S3Prefix,
+				Region: appCfg.Storage.S3.S3Region,
+			})
+			perfPlugin = s3.NewPerformancePlugin(s3.PerformancePluginConfig{
 				Bucket: appCfg.Storage.S3.S3Bucket,
 				Prefix: appCfg.Storage.S3.S3Prefix,
 				Region: appCfg.Storage.S3.S3Region,
@@ -233,70 +255,130 @@ func main() {
 			for i, b := range brokers {
 				brokers[i] = strings.TrimSpace(b)
 			}
-			plugin = kafka.NewKafkaPlugin(kafka.KafkaPluginConfig{
+			baseTopic := appCfg.Storage.Kafka.KafkaTopic
+			ubPlugin = kafka.NewUserBehaviorPlugin(kafka.UserBehaviorPluginConfig{
 				Brokers:       brokers,
-				Topic:         appCfg.Storage.Kafka.KafkaTopic,
+				Topic:         baseTopic + ".user_behavior",
+				Compression:   appCfg.Storage.Kafka.KafkaCompression,
+				BatchSize:     appCfg.Storage.Kafka.BatchSize,
+				FlushInterval: appCfg.Storage.Kafka.FlushInterval,
+			})
+			gpPlugin = kafka.NewGameplayPlugin(kafka.GameplayPluginConfig{
+				Brokers:       brokers,
+				Topic:         baseTopic + ".gameplay",
+				Compression:   appCfg.Storage.Kafka.KafkaCompression,
+				BatchSize:     appCfg.Storage.Kafka.BatchSize,
+				FlushInterval: appCfg.Storage.Kafka.FlushInterval,
+			})
+			perfPlugin = kafka.NewPerformancePlugin(kafka.PerformancePluginConfig{
+				Brokers:       brokers,
+				Topic:         baseTopic + ".performance",
 				Compression:   appCfg.Storage.Kafka.KafkaCompression,
 				BatchSize:     appCfg.Storage.Kafka.BatchSize,
 				FlushInterval: appCfg.Storage.Kafka.FlushInterval,
 			})
 
 		case "mongodb":
-			plugin = mongodb.NewMongoDBPlugin(mongodb.MongoDBPluginConfig{
+			ubPlugin = mongodb.NewUserBehaviorPlugin(mongodb.UserBehaviorPluginConfig{
 				URI:        appCfg.Storage.MongoDB.MongoURI,
 				Database:   appCfg.Storage.MongoDB.MongoDatabase,
-				Collection: appCfg.Storage.MongoDB.MongoCollection,
+				Collection: "user_behavior_events",
+				Workers:    appCfg.Storage.MongoDB.Workers,
+			})
+			gpPlugin = mongodb.NewGameplayPlugin(mongodb.GameplayPluginConfig{
+				URI:        appCfg.Storage.MongoDB.MongoURI,
+				Database:   appCfg.Storage.MongoDB.MongoDatabase,
+				Collection: "gameplay_events",
+				Workers:    appCfg.Storage.MongoDB.Workers,
+			})
+			perfPlugin = mongodb.NewPerformancePlugin(mongodb.PerformancePluginConfig{
+				URI:        appCfg.Storage.MongoDB.MongoURI,
+				Database:   appCfg.Storage.MongoDB.MongoDatabase,
+				Collection: "performance_events",
 				Workers:    appCfg.Storage.MongoDB.Workers,
 			})
 
 		case "noop":
-			plugin = noop.NewNoopPlugin[*storage.TelemetryEvent]()
+			ubPlugin = noop.NewNoopPlugin[*events.UserBehaviorEvent]()
+			gpPlugin = noop.NewNoopPlugin[*events.GameplayEvent]()
+			perfPlugin = noop.NewNoopPlugin[*events.PerformanceEvent]()
 
 		default:
 			logger.Error("unknown plugin", "plugin", pluginName)
 			os.Exit(1)
 		}
 
-		if err := plugin.Initialize(ctx); err != nil {
-			logger.Error("failed to initialize plugin", "plugin", pluginName, "error", err)
-			os.Exit(1)
+		err := ubPlugin.Initialize(ctx)
+		if err != nil {
+			logger.Error("failed to initialize plugin", "plugin", ubPlugin.Name(), "error", err)
+			panic(err)
 		}
 
-		enabledPlugins = append(enabledPlugins, plugin)
-		logger.Info("plugin initialized", "plugin", pluginName)
+		logger.Info("plugin initialized", "plugin", ubPlugin.Name())
+
+		err = gpPlugin.Initialize(ctx)
+		if err != nil {
+			logger.Error("failed to initialize plugin", "plugin", gpPlugin.Name(), "error", err)
+			panic(err)
+		}
+
+		logger.Info("plugin initialized", "plugin", gpPlugin.Name())
+
+		err = perfPlugin.Initialize(ctx)
+		if err != nil {
+			logger.Error("failed to initialize plugin", "plugin", perfPlugin.Name(), "error", err)
+			panic(err)
+		}
+
+		logger.Info("plugin initialized", "plugin", perfPlugin.Name())
+
+		userBehaviorPlugins = append(userBehaviorPlugins, ubPlugin)
+		gameplayPlugins = append(gameplayPlugins, gpPlugin)
+		performancePlugins = append(performancePlugins, perfPlugin)
 	}
 
-	if len(enabledPlugins) == 0 {
+	if len(userBehaviorPlugins) == 0 {
 		logger.Error("no storage plugins enabled")
 		os.Exit(1)
 	}
 
-	logger.Info("storage plugins ready", "count", len(enabledPlugins))
+	logger.Info("storage plugins ready",
+		"user_behavior", len(userBehaviorPlugins),
+		"gameplay", len(gameplayPlugins),
+		"performance", len(performancePlugins))
 
-	// Initialize async processor
-	processorConfig := processor.Config{
+	// ---------------------------------------------------------------------------
+	// Build deduplicators — one per event type.
+	// ---------------------------------------------------------------------------
+	ubDedup := buildDeduplicator[*events.UserBehaviorEvent](appCfg, logger)
+	gpDedup := buildDeduplicator[*events.GameplayEvent](appCfg, logger)
+	perfDedup := buildDeduplicator[*events.PerformanceEvent](appCfg, logger)
+
+	// ---------------------------------------------------------------------------
+	// Build three independent typed processors.
+	// ---------------------------------------------------------------------------
+	processorCfg := processor.Config{
 		Workers:       appCfg.Processor.Workers,
 		ChannelBuffer: appCfg.Processor.ChannelBuffer,
 		BatchSize:     appCfg.Processor.DefaultBatchSize,
 		FlushInterval: appCfg.Processor.DefaultFlushInterval,
 	}
 
-	telemetryProcessor := processor.NewProcessor(
-		processorConfig,
-		enabledPlugins,
-		deduplicator,
-		logger,
-	)
-	telemetryProcessor.Start()
+	userBehaviorProc := processor.NewProcessor(processorCfg, userBehaviorPlugins, ubDedup, logger)
+	gameplayProc := processor.NewProcessor(processorCfg, gameplayPlugins, gpDedup, logger)
+	performanceProc := processor.NewProcessor(processorCfg, performancePlugins, perfDedup, logger)
 
-	logger.Info("async processor started",
-		"workers", processorConfig.Workers,
-		"channel_buffer", processorConfig.ChannelBuffer,
-		"batch_size", processorConfig.BatchSize,
-		"flush_interval", processorConfig.FlushInterval)
+	userBehaviorProc.Start()
+	gameplayProc.Start()
+	performanceProc.Start()
+
+	logger.Info("async processors started",
+		"workers", processorCfg.Workers,
+		"channel_buffer", processorCfg.ChannelBuffer,
+		"batch_size", processorCfg.BatchSize,
+		"flush_interval", processorCfg.FlushInterval)
 
 	// Register Telemetry Service
-	// Namespace is static — read once from env at startup and injected into the service.
 	namespace := os.Getenv("AB_NAMESPACE")
 	if namespace == "" {
 		namespace = "accelbyte"
@@ -306,7 +388,9 @@ func main() {
 		tokenRepo,
 		configRepo,
 		refreshRepo,
-		telemetryProcessor,
+		userBehaviorProc,
+		gameplayProc,
+		performanceProc,
 		logger,
 	)
 	pb.RegisterServiceServer(s, telemetrySvc)
@@ -326,7 +410,7 @@ func main() {
 
 	// Start the gRPC-Gateway HTTP server
 	go func() {
-		swaggerDir := "gateway/apidocs" // Path to swagger directory
+		swaggerDir := "gateway/apidocs"
 		grpcGatewayHTTPServer := newGRPCGatewayHTTPServer(fmt.Sprintf(":%d", grpcGatewayHTTPPort), grpcGateway, logger, swaggerDir)
 		logger.Info("starting gRPC-Gateway HTTP server", "port", grpcGatewayHTTPPort)
 		if err := grpcGatewayHTTPServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -404,20 +488,42 @@ func main() {
 	// Graceful shutdown
 	logger.Info("initiating graceful shutdown")
 
-	// Shutdown processor (flush pending events)
-	if err := telemetryProcessor.Shutdown(30 * time.Second); err != nil {
-		logger.Error("processor shutdown error", "error", err)
+	shutdownTimeout := 30 * time.Second
+	if err := userBehaviorProc.Shutdown(shutdownTimeout); err != nil {
+		logger.Error("user_behavior processor shutdown error", "error", err)
+	}
+	if err := gameplayProc.Shutdown(shutdownTimeout); err != nil {
+		logger.Error("gameplay processor shutdown error", "error", err)
+	}
+	if err := performanceProc.Shutdown(shutdownTimeout); err != nil {
+		logger.Error("performance processor shutdown error", "error", err)
 	}
 
-	// Close deduplicator
-	if err := deduplicator.Close(); err != nil {
-		logger.Error("deduplicator close error", "error", err)
+	// Close deduplicators
+	if err := ubDedup.Close(); err != nil {
+		logger.Error("user_behavior deduplicator close error", "error", err)
+	}
+	if err := gpDedup.Close(); err != nil {
+		logger.Error("gameplay deduplicator close error", "error", err)
+	}
+	if err := perfDedup.Close(); err != nil {
+		logger.Error("performance deduplicator close error", "error", err)
 	}
 
-	// Close all storage plugins
-	for _, plugin := range enabledPlugins {
-		if err := plugin.Close(); err != nil {
-			logger.Error("failed to close plugin", "plugin", plugin.Name(), "error", err)
+	// Close all storage plugins — each plugin owns its own connection.
+	for _, p := range userBehaviorPlugins {
+		if err := p.Close(); err != nil {
+			logger.Error("failed to close plugin", "plugin", p.Name(), "error", err)
+		}
+	}
+	for _, p := range gameplayPlugins {
+		if err := p.Close(); err != nil {
+			logger.Error("failed to close plugin", "plugin", p.Name(), "error", err)
+		}
+	}
+	for _, p := range performancePlugins {
+		if err := p.Close(); err != nil {
+			logger.Error("failed to close plugin", "plugin", p.Name(), "error", err)
 		}
 	}
 
@@ -427,13 +533,9 @@ func main() {
 func newGRPCGatewayHTTPServer(
 	addr string, handler http.Handler, logger *slog.Logger, swaggerDir string,
 ) *http.Server {
-	// Create a new ServeMux
 	mux := http.NewServeMux()
-
-	// Add the gRPC-Gateway handler
 	mux.Handle("/", handler)
 
-	// Get basePath from environment for backward compatibility
 	basePath := os.Getenv("SERVER_BASE_PATH")
 	if basePath == "" {
 		basePath = os.Getenv("BASE_PATH")
@@ -442,30 +544,26 @@ func newGRPCGatewayHTTPServer(
 		basePath = "/telemetry"
 	}
 
-	// Serve Swagger UI and JSON
 	serveSwaggerUI(mux, basePath)
 	serveSwaggerJSON(mux, swaggerDir, basePath)
 
-	// Add logging middleware
 	loggedMux := loggingMiddleware(logger, mux)
 
 	return &http.Server{
 		Addr:     addr,
 		Handler:  loggedMux,
-		ErrorLog: log.New(os.Stderr, "httpSrv: ", log.LstdFlags), // Configure the logger for the HTTP server
+		ErrorLog: log.New(os.Stderr, "httpSrv: ", log.LstdFlags),
 	}
 }
 
-// loggingMiddleware is a middleware that logs HTTP requests
 func loggingMiddleware(logger *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		next.ServeHTTP(w, r)
-		duration := time.Since(start)
 		logger.Info("HTTP request",
 			"method", r.Method,
 			"path", r.URL.Path,
-			"duration", duration,
+			"duration", time.Since(start),
 		)
 	})
 }
@@ -482,7 +580,6 @@ func serveSwaggerJSON(mux *http.ServeMux, swaggerDir string, basePath string) {
 		matchingFiles, err := filepath.Glob(filepath.Join(swaggerDir, "*.swagger.json"))
 		if err != nil || len(matchingFiles) == 0 {
 			http.Error(w, "Error finding Swagger JSON file", http.StatusInternalServerError)
-
 			return
 		}
 
@@ -490,31 +587,26 @@ func serveSwaggerJSON(mux *http.ServeMux, swaggerDir string, basePath string) {
 		swagger, err := loads.Spec(firstMatchingFile)
 		if err != nil {
 			http.Error(w, "Error parsing Swagger JSON file", http.StatusInternalServerError)
-
 			return
 		}
 
-		// Update the base path
 		swagger.Spec().BasePath = basePath
 
 		updatedSwagger, err := swagger.Spec().MarshalJSON()
 		if err != nil {
 			http.Error(w, "Error serializing updated Swagger JSON", http.StatusInternalServerError)
-
 			return
 		}
 		var prettySwagger bytes.Buffer
 		err = json.Indent(&prettySwagger, updatedSwagger, "", "  ")
 		if err != nil {
 			http.Error(w, "Error formatting updated Swagger JSON", http.StatusInternalServerError)
-
 			return
 		}
 
 		_, err = w.Write(prettySwagger.Bytes())
 		if err != nil {
 			http.Error(w, "Error writing Swagger JSON response", http.StatusInternalServerError)
-
 			return
 		}
 	})
