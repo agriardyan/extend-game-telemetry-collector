@@ -23,7 +23,7 @@ import (
 type GameplayPluginConfig struct {
 	Brokers       []string
 	Topic         string
-	Compression   string        // "snappy" (default), "gzip", "lz4", "zstd"
+	Compression   string // "snappy" (default), "gzip", "lz4", "zstd"
 	BatchSize     int
 	FlushInterval time.Duration
 }
@@ -145,4 +145,3 @@ func (p *GameplayPlugin) HealthCheck(ctx context.Context) error {
 	}
 	return nil
 }
-

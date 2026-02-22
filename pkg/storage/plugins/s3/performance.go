@@ -24,9 +24,10 @@ import (
 // Each telemetry type plugin owns its config independently, allowing different
 // buckets, prefixes, or regions per event category.
 type PerformancePluginConfig struct {
-	Bucket string // required
-	Prefix string // default "telemetry"
-	Region string // default "us-east-1"
+	Bucket   string // required
+	Prefix   string // default "telemetry"
+	Region   string // default "us-east-1"
+	Endpoint string // optional - for MinIO or custom S3-compatible endpoints
 }
 
 // PerformancePlugin stores performance telemetry events as JSON files in Amazon S3.
@@ -62,9 +63,19 @@ func (p *PerformancePlugin) Initialize(ctx context.Context) error {
 		return fmt.Errorf("failed to load AWS config: %w", err)
 	}
 
-	p.client = awss3.NewFromConfig(awsCfg)
-	p.logger.Info("s3 plugin initialized",
-		"bucket", p.cfg.Bucket, "prefix", p.cfg.Prefix, "region", p.cfg.Region)
+	// Configure S3 client with custom endpoint for MinIO or S3-compatible services
+	if p.cfg.Endpoint != "" {
+		p.client = awss3.NewFromConfig(awsCfg, func(o *awss3.Options) {
+			o.BaseEndpoint = aws.String(p.cfg.Endpoint)
+			o.UsePathStyle = true // MinIO requires path-style addressing
+		})
+		p.logger.Info("s3 plugin initialized with custom endpoint",
+			"bucket", p.cfg.Bucket, "prefix", p.cfg.Prefix, "region", p.cfg.Region, "endpoint", p.cfg.Endpoint)
+	} else {
+		p.client = awss3.NewFromConfig(awsCfg)
+		p.logger.Info("s3 plugin initialized",
+			"bucket", p.cfg.Bucket, "prefix", p.cfg.Prefix, "region", p.cfg.Region)
+	}
 	return nil
 }
 
