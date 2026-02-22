@@ -13,8 +13,8 @@ import (
 	"time"
 
 	pb "github.com/agriardyan/extend-game-telemetry-collector/pkg/pb"
+	"github.com/agriardyan/extend-game-telemetry-collector/pkg/events"
 	"github.com/agriardyan/extend-game-telemetry-collector/pkg/processor"
-	"github.com/agriardyan/extend-game-telemetry-collector/pkg/storage"
 
 	"github.com/AccelByte/accelbyte-go-sdk/services-api/pkg/repository"
 	"google.golang.org/grpc/codes"
@@ -28,12 +28,14 @@ import (
 // UserID is always derived from the Bearer JWT — never trusted from the request body.
 type TelemetryService struct {
 	pb.UnimplementedServiceServer
-	namespace   string
-	tokenRepo   repository.TokenRepository
-	configRepo  repository.ConfigRepository
-	refreshRepo repository.RefreshTokenRepository
-	processor   *processor.Processor[*storage.TelemetryEvent]
-	logger      *slog.Logger
+	namespace        string
+	tokenRepo        repository.TokenRepository
+	configRepo       repository.ConfigRepository
+	refreshRepo      repository.RefreshTokenRepository
+	userBehaviorProc *processor.Processor[*events.UserBehaviorEvent]
+	gameplayProc     *processor.Processor[*events.GameplayEvent]
+	performanceProc  *processor.Processor[*events.PerformanceEvent]
+	logger           *slog.Logger
 }
 
 func NewTelemetryService(
@@ -41,16 +43,20 @@ func NewTelemetryService(
 	tokenRepo repository.TokenRepository,
 	configRepo repository.ConfigRepository,
 	refreshRepo repository.RefreshTokenRepository,
-	proc *processor.Processor[*storage.TelemetryEvent],
+	userBehaviorProc *processor.Processor[*events.UserBehaviorEvent],
+	gameplayProc *processor.Processor[*events.GameplayEvent],
+	performanceProc *processor.Processor[*events.PerformanceEvent],
 	logger *slog.Logger,
 ) *TelemetryService {
 	return &TelemetryService{
-		namespace:   namespace,
-		tokenRepo:   tokenRepo,
-		configRepo:  configRepo,
-		refreshRepo: refreshRepo,
-		processor:   proc,
-		logger:      logger.With("component", "telemetry_service"),
+		namespace:        namespace,
+		tokenRepo:        tokenRepo,
+		configRepo:       configRepo,
+		refreshRepo:      refreshRepo,
+		userBehaviorProc: userBehaviorProc,
+		gameplayProc:     gameplayProc,
+		performanceProc:  performanceProc,
+		logger:           logger.With("component", "telemetry_service"),
 	}
 }
 
@@ -70,16 +76,20 @@ func (s *TelemetryService) CreateUserBehaviorTelemetry(
 		return nil, err
 	}
 
-	event := &storage.TelemetryEvent{
-		Kind:            storage.KindUserBehavior,
+	event := &events.UserBehaviorEvent{
 		Namespace:       s.namespace,
 		UserID:          userID,
 		ServerTimestamp: time.Now().UnixMilli(),
 		SourceIP:        s.extractSourceIP(ctx),
-		UserBehavior:    req,
+		Payload:         req,
 	}
 
-	return s.submit(ctx, event)
+	if err := s.userBehaviorProc.Submit(event); err != nil {
+		s.logger.Error("failed to submit user behavior event",
+			"error", err, "namespace", event.Namespace, "user_id", event.UserID)
+		return nil, status.Error(codes.Internal, "failed to process telemetry event")
+	}
+	return &pb.CreateTelemetryResponse{}, nil
 }
 
 // CreateGameplayTelemetry handles POST /v1/telemetry/gameplay
@@ -98,16 +108,20 @@ func (s *TelemetryService) CreateGameplayTelemetry(
 		return nil, err
 	}
 
-	event := &storage.TelemetryEvent{
-		Kind:            storage.KindGameplay,
+	event := &events.GameplayEvent{
 		Namespace:       s.namespace,
 		UserID:          userID,
 		ServerTimestamp: time.Now().UnixMilli(),
 		SourceIP:        s.extractSourceIP(ctx),
-		Gameplay:        req,
+		Payload:         req,
 	}
 
-	return s.submit(ctx, event)
+	if err := s.gameplayProc.Submit(event); err != nil {
+		s.logger.Error("failed to submit gameplay event",
+			"error", err, "namespace", event.Namespace, "user_id", event.UserID)
+		return nil, status.Error(codes.Internal, "failed to process telemetry event")
+	}
+	return &pb.CreateTelemetryResponse{}, nil
 }
 
 // CreatePerformanceTelemetry handles POST /v1/telemetry/performance
@@ -126,26 +140,17 @@ func (s *TelemetryService) CreatePerformanceTelemetry(
 		return nil, err
 	}
 
-	event := &storage.TelemetryEvent{
-		Kind:            storage.KindPerformance,
+	event := &events.PerformanceEvent{
 		Namespace:       s.namespace,
 		UserID:          userID,
 		ServerTimestamp: time.Now().UnixMilli(),
 		SourceIP:        s.extractSourceIP(ctx),
-		Performance:     req,
+		Payload:         req,
 	}
 
-	return s.submit(ctx, event)
-}
-
-// submit enqueues an event into the async processor and returns immediately.
-func (s *TelemetryService) submit(ctx context.Context, event *storage.TelemetryEvent) (*pb.CreateTelemetryResponse, error) {
-	if err := s.processor.Submit(event); err != nil {
-		s.logger.Error("failed to submit event",
-			"error", err,
-			"kind", event.Kind,
-			"namespace", event.Namespace,
-			"user_id", event.UserID)
+	if err := s.performanceProc.Submit(event); err != nil {
+		s.logger.Error("failed to submit performance event",
+			"error", err, "namespace", event.Namespace, "user_id", event.UserID)
 		return nil, status.Error(codes.Internal, "failed to process telemetry event")
 	}
 	return &pb.CreateTelemetryResponse{}, nil

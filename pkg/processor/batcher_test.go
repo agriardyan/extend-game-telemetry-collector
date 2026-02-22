@@ -9,18 +9,29 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agriardyan/extend-game-telemetry-collector/pkg/events"
 	pb "github.com/agriardyan/extend-game-telemetry-collector/pkg/pb"
-	"github.com/agriardyan/extend-game-telemetry-collector/pkg/storage"
 )
+
+func makeGameplayEvent(serverTimestamp int64) *events.GameplayEvent {
+	return &events.GameplayEvent{
+		Namespace:       "test",
+		UserID:          "user1",
+		ServerTimestamp: serverTimestamp,
+		Payload: &pb.CreateGameplayTelemetryRequest{
+			EventId: "test_event",
+		},
+	}
+}
 
 func TestBatcher_SizeBasedFlush(t *testing.T) {
 	maxSize := 5
-	maxWait := 1 * time.Hour // Set high to ensure size triggers first
+	maxWait := 1 * time.Hour
 
 	var mu sync.Mutex
-	var flushedBatches [][]*storage.TelemetryEvent
+	var flushedBatches [][]*events.GameplayEvent
 
-	flushFunc := func(batch []*storage.TelemetryEvent) {
+	flushFunc := func(batch []*events.GameplayEvent) {
 		mu.Lock()
 		defer mu.Unlock()
 		flushedBatches = append(flushedBatches, batch)
@@ -28,29 +39,16 @@ func TestBatcher_SizeBasedFlush(t *testing.T) {
 
 	batcher := NewBatcher(maxSize, maxWait, flushFunc)
 
-	// Add events one by one
 	for i := 0; i < 12; i++ {
-		event := &storage.TelemetryEvent{
-			Kind:            storage.KindGameplay,
-			Namespace:       "test",
-			UserID:          "user1",
-			ServerTimestamp: int64(i),
-			Gameplay: &pb.CreateGameplayTelemetryRequest{
-				EventId: "test_event",
-			},
-		}
-		batcher.Add(event)
-		time.Sleep(10 * time.Millisecond) // Small delay to ensure flush completes
+		batcher.Add(makeGameplayEvent(int64(i)))
+		time.Sleep(10 * time.Millisecond)
 	}
 
-	// Wait a bit for async flushes
 	time.Sleep(100 * time.Millisecond)
 
 	mu.Lock()
 	defer mu.Unlock()
 
-	// Should have 2 full batches of 5 events each
-	// (12 events / 5 = 2 full batches + 2 remaining)
 	if len(flushedBatches) != 2 {
 		t.Errorf("Expected 2 flushed batches, got %d", len(flushedBatches))
 	}
@@ -61,20 +59,19 @@ func TestBatcher_SizeBasedFlush(t *testing.T) {
 		}
 	}
 
-	// Remaining 2 events should still be in the batcher
 	if batcher.Size() != 2 {
 		t.Errorf("Expected 2 events remaining in batcher, got %d", batcher.Size())
 	}
 }
 
 func TestBatcher_TimeBasedFlush(t *testing.T) {
-	maxSize := 100 // Set high to ensure time triggers first
+	maxSize := 100
 	maxWait := 200 * time.Millisecond
 
 	var mu sync.Mutex
-	var flushedBatches [][]*storage.TelemetryEvent
+	var flushedBatches [][]*events.GameplayEvent
 
-	flushFunc := func(batch []*storage.TelemetryEvent) {
+	flushFunc := func(batch []*events.GameplayEvent) {
 		mu.Lock()
 		defer mu.Unlock()
 		flushedBatches = append(flushedBatches, batch)
@@ -82,36 +79,21 @@ func TestBatcher_TimeBasedFlush(t *testing.T) {
 
 	batcher := NewBatcher(maxSize, maxWait, flushFunc)
 
-	// Add 3 events
 	for i := 0; i < 3; i++ {
-		event := &storage.TelemetryEvent{
-			Kind:            storage.KindGameplay,
-			Namespace:       "test",
-			UserID:          "user1",
-			ServerTimestamp: int64(i),
-			Gameplay: &pb.CreateGameplayTelemetryRequest{
-				EventId: "test_event",
-			},
-		}
-		batcher.Add(event)
+		batcher.Add(makeGameplayEvent(int64(i)))
 	}
 
-	// Wait for timer to trigger flush
 	time.Sleep(maxWait + 100*time.Millisecond)
 
 	mu.Lock()
 	defer mu.Unlock()
 
-	// Should have 1 batch with 3 events
 	if len(flushedBatches) != 1 {
 		t.Errorf("Expected 1 flushed batch, got %d", len(flushedBatches))
 	}
-
 	if len(flushedBatches) > 0 && len(flushedBatches[0]) != 3 {
 		t.Errorf("Expected 3 events in batch, got %d", len(flushedBatches[0]))
 	}
-
-	// Batcher should be empty
 	if batcher.Size() != 0 {
 		t.Errorf("Expected 0 events remaining in batcher, got %d", batcher.Size())
 	}
@@ -122,9 +104,9 @@ func TestBatcher_ManualFlush(t *testing.T) {
 	maxWait := 1 * time.Hour
 
 	var mu sync.Mutex
-	var flushedBatches [][]*storage.TelemetryEvent
+	var flushedBatches [][]*events.GameplayEvent
 
-	flushFunc := func(batch []*storage.TelemetryEvent) {
+	flushFunc := func(batch []*events.GameplayEvent) {
 		mu.Lock()
 		defer mu.Unlock()
 		flushedBatches = append(flushedBatches, batch)
@@ -132,39 +114,22 @@ func TestBatcher_ManualFlush(t *testing.T) {
 
 	batcher := NewBatcher(maxSize, maxWait, flushFunc)
 
-	// Add 5 events
 	for i := 0; i < 5; i++ {
-		event := &storage.TelemetryEvent{
-			Kind:            storage.KindGameplay,
-			Namespace:       "test",
-			UserID:          "user1",
-			ServerTimestamp: int64(i),
-			Gameplay: &pb.CreateGameplayTelemetryRequest{
-				EventId: "test_event",
-			},
-		}
-		batcher.Add(event)
+		batcher.Add(makeGameplayEvent(int64(i)))
 	}
 
-	// Manually flush
 	batcher.Flush()
-
-	// Wait for async flush
 	time.Sleep(50 * time.Millisecond)
 
 	mu.Lock()
 	defer mu.Unlock()
 
-	// Should have 1 batch with 5 events
 	if len(flushedBatches) != 1 {
 		t.Errorf("Expected 1 flushed batch, got %d", len(flushedBatches))
 	}
-
 	if len(flushedBatches) > 0 && len(flushedBatches[0]) != 5 {
 		t.Errorf("Expected 5 events in batch, got %d", len(flushedBatches[0]))
 	}
-
-	// Batcher should be empty
 	if batcher.Size() != 0 {
 		t.Errorf("Expected 0 events remaining in batcher, got %d", batcher.Size())
 	}
@@ -175,26 +140,21 @@ func TestBatcher_EmptyFlush(t *testing.T) {
 	maxWait := 1 * time.Hour
 
 	var mu sync.Mutex
-	var flushedBatches [][]*storage.TelemetryEvent
+	var flushedBatches [][]*events.GameplayEvent
 
-	flushFunc := func(batch []*storage.TelemetryEvent) {
+	flushFunc := func(batch []*events.GameplayEvent) {
 		mu.Lock()
 		defer mu.Unlock()
 		flushedBatches = append(flushedBatches, batch)
 	}
 
 	batcher := NewBatcher(maxSize, maxWait, flushFunc)
-
-	// Flush without adding any events
 	batcher.Flush()
-
-	// Wait a bit
 	time.Sleep(50 * time.Millisecond)
 
 	mu.Lock()
 	defer mu.Unlock()
 
-	// Should not have any flushed batches
 	if len(flushedBatches) != 0 {
 		t.Errorf("Expected 0 flushed batches, got %d", len(flushedBatches))
 	}
@@ -205,10 +165,10 @@ func TestBatcher_ConcurrentAdds(t *testing.T) {
 	maxWait := 100 * time.Millisecond
 
 	var mu sync.Mutex
-	var flushedBatches [][]*storage.TelemetryEvent
+	var flushedBatches [][]*events.GameplayEvent
 	totalFlushed := 0
 
-	flushFunc := func(batch []*storage.TelemetryEvent) {
+	flushFunc := func(batch []*events.GameplayEvent) {
 		mu.Lock()
 		defer mu.Unlock()
 		flushedBatches = append(flushedBatches, batch)
@@ -217,7 +177,6 @@ func TestBatcher_ConcurrentAdds(t *testing.T) {
 
 	batcher := NewBatcher(maxSize, maxWait, flushFunc)
 
-	// Concurrently add events from multiple goroutines
 	numGoroutines := 10
 	eventsPerGoroutine := 20
 	var wg sync.WaitGroup
@@ -227,39 +186,24 @@ func TestBatcher_ConcurrentAdds(t *testing.T) {
 		go func(goroutineID int) {
 			defer wg.Done()
 			for i := 0; i < eventsPerGoroutine; i++ {
-				event := &storage.TelemetryEvent{
-					Kind:            storage.KindGameplay,
-					Namespace:       "test",
-					UserID:          "user1",
-					ServerTimestamp: int64(goroutineID*1000 + i),
-					Gameplay: &pb.CreateGameplayTelemetryRequest{
-						EventId: "test_event",
-					},
-				}
-				batcher.Add(event)
+				batcher.Add(makeGameplayEvent(int64(goroutineID*1000 + i)))
 			}
 		}(g)
 	}
 
 	wg.Wait()
-
-	// Flush remaining events
 	batcher.Flush()
-
-	// Wait for async flushes
 	time.Sleep(200 * time.Millisecond)
 
 	mu.Lock()
 	defer mu.Unlock()
 
 	expectedTotal := numGoroutines * eventsPerGoroutine
-
-	// Check that all events were flushed
 	if totalFlushed != expectedTotal {
 		t.Errorf("Expected %d total flushed events, got %d", expectedTotal, totalFlushed)
 	}
 
-	// Verify no duplicate events
+	// Verify no duplicate events (unique by ServerTimestamp)
 	eventSet := make(map[int64]bool)
 	for _, batch := range flushedBatches {
 		for _, event := range batch {
@@ -276,9 +220,9 @@ func TestBatcher_TimerCancellation(t *testing.T) {
 	maxWait := 200 * time.Millisecond
 
 	var mu sync.Mutex
-	var flushedBatches [][]*storage.TelemetryEvent
+	var flushedBatches [][]*events.GameplayEvent
 
-	flushFunc := func(batch []*storage.TelemetryEvent) {
+	flushFunc := func(batch []*events.GameplayEvent) {
 		mu.Lock()
 		defer mu.Unlock()
 		flushedBatches = append(flushedBatches, batch)
@@ -288,40 +232,20 @@ func TestBatcher_TimerCancellation(t *testing.T) {
 
 	// Add 3 events (starts timer)
 	for i := 0; i < 3; i++ {
-		event := &storage.TelemetryEvent{
-			Kind:            storage.KindGameplay,
-			Namespace:       "test",
-			UserID:          "user1",
-			ServerTimestamp: int64(i),
-			Gameplay: &pb.CreateGameplayTelemetryRequest{
-				EventId: "test_event",
-			},
-		}
-		batcher.Add(event)
+		batcher.Add(makeGameplayEvent(int64(i)))
 	}
 
-	// Add 2 more events to trigger size-based flush (should cancel timer)
+	// Add 2 more to trigger size-based flush (should cancel timer)
 	time.Sleep(50 * time.Millisecond)
 	for i := 3; i < 5; i++ {
-		event := &storage.TelemetryEvent{
-			Kind:            storage.KindGameplay,
-			Namespace:       "test",
-			UserID:          "user1",
-			ServerTimestamp: int64(i),
-			Gameplay: &pb.CreateGameplayTelemetryRequest{
-				EventId: "test_event",
-			},
-		}
-		batcher.Add(event)
+		batcher.Add(makeGameplayEvent(int64(i)))
 	}
 
-	// Wait for async flush
 	time.Sleep(100 * time.Millisecond)
 
 	mu.Lock()
 	defer mu.Unlock()
 
-	// Should have 1 batch (size-based flush)
 	if len(flushedBatches) != 1 {
 		t.Errorf("Expected 1 flushed batch, got %d", len(flushedBatches))
 	}
@@ -329,7 +253,6 @@ func TestBatcher_TimerCancellation(t *testing.T) {
 	// Wait to ensure timer doesn't fire
 	time.Sleep(maxWait + 100*time.Millisecond)
 
-	// Still should have only 1 batch (timer was cancelled)
 	if len(flushedBatches) != 1 {
 		t.Errorf("Expected 1 flushed batch after timer wait, got %d", len(flushedBatches))
 	}

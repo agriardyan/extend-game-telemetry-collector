@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/agriardyan/extend-game-telemetry-collector/pkg/storage"
-
 	"github.com/redis/go-redis/v9"
 )
 

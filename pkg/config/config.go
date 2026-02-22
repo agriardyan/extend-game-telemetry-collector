@@ -81,9 +81,10 @@ type PluginConfig struct {
 
 	// Plugin-specific settings
 	// S3 settings
-	S3Bucket string `env:"BUCKET" envDefault:""`
-	S3Prefix string `env:"PREFIX" envDefault:"telemetry"`
-	S3Region string `env:"REGION" envDefault:"us-east-1"`
+	S3Bucket   string `env:"BUCKET" envDefault:""`
+	S3Prefix   string `env:"PREFIX" envDefault:"telemetry"`
+	S3Region   string `env:"REGION" envDefault:"us-east-1"`
+	S3Endpoint string `env:"ENDPOINT" envDefault:""` // for MinIO or custom S3-compatible endpoints
 
 	// Postgres settings
 	PostgresDSN   string `env:"DSN" envDefault:""`
