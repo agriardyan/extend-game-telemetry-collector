@@ -119,7 +119,7 @@ Each type has its own processor, deduplicator, and plugin slice, so a spike in g
 ## Built-in Storage Plugins
 
 | Plugin | Use case |
-|---|---|---|
+|---|---|
 | `s3` | Data lake, Athena/Glue/Spark queries |
 | `postgres` | SQL analytics, session replay, JSONB queries |
 | `kafka` | Real-time streaming, downstream consumers |
