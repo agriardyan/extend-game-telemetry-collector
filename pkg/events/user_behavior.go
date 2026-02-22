@@ -10,7 +10,7 @@ import (
 	pb "github.com/agriardyan/extend-game-telemetry-collector/pkg/pb"
 )
 
-// UserBehaviorEvent is the typed in-memory representation of a user behavior telemetry event.
+// UserBehaviorEvent is the typed representation of a user behavior telemetry event.
 // It carries server-enriched metadata alongside the raw protobuf payload.
 type UserBehaviorEvent struct {
 	Namespace       string
@@ -43,10 +43,10 @@ func (e *UserBehaviorEvent) ToDocument() map[string]interface{} {
 		"source_ip":        e.SourceIP,
 	}
 	if e.Payload != nil {
-		doc["event_id"]  = e.Payload.EventId
-		doc["version"]   = e.Payload.Version
+		doc["event_id"] = e.Payload.EventId
+		doc["version"] = e.Payload.Version
 		doc["timestamp"] = e.Payload.Timestamp
-		doc["payload"]   = e.Payload
+		doc["payload"] = e.Payload
 	}
 	return doc
 }

@@ -10,7 +10,7 @@ import (
 	pb "github.com/agriardyan/extend-game-telemetry-collector/pkg/pb"
 )
 
-// GameplayEvent is the typed in-memory representation of a gameplay telemetry event.
+// GameplayEvent is the typed representation of a gameplay telemetry event.
 // It carries server-enriched metadata alongside the raw protobuf payload.
 type GameplayEvent struct {
 	Namespace       string
@@ -41,10 +41,10 @@ func (e *GameplayEvent) ToDocument() map[string]interface{} {
 		"source_ip":        e.SourceIP,
 	}
 	if e.Payload != nil {
-		doc["event_id"]  = e.Payload.EventId
-		doc["version"]   = e.Payload.Version
+		doc["event_id"] = e.Payload.EventId
+		doc["version"] = e.Payload.Version
 		doc["timestamp"] = e.Payload.Timestamp
-		doc["payload"]   = e.Payload
+		doc["payload"] = e.Payload
 	}
 	return doc
 }

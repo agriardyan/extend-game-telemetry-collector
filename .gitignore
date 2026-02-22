@@ -239,3 +239,5 @@ extend-game-telemetry-collector
 
 .env*
 !.env.template
+
+.old.*
